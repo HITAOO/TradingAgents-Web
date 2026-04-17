@@ -660,62 +660,6 @@ footer { display: none !important; }
 }
 h1, h2, h3, h4, h5, h6 { font-weight: 600 !important; letter-spacing: 0 !important; }
 
-/* Hide the main top-level tab navigation — we drive it programmatically */
-#main-nav > .tab-nav { display: none !important; }
-
-/* ── Landing cards ── */
-#card-first > button, #card-re > button {
-    min-height: 200px !important;
-    border-radius: 20px !important;
-    font-size: 18px !important;
-    font-weight: 600 !important;
-    white-space: pre-line !important;
-    line-height: 1.7 !important;
-    padding: 28px 24px !important;
-    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease !important;
-    cursor: pointer !important;
-}
-
-/* First Analysis card — blue */
-#card-first > button {
-    background: linear-gradient(145deg, #1e3a5f 0%, #162d4a 100%) !important;
-    border: 2px solid rgba(59,130,246,.35) !important;
-    color: #93c5fd !important;
-    box-shadow: 0 4px 24px rgba(59,130,246,.10) !important;
-}
-#card-first > button:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 14px 40px rgba(59,130,246,.28) !important;
-    border-color: rgba(59,130,246,.75) !important;
-}
-
-/* Re-Analysis card — emerald */
-#card-re > button {
-    background: linear-gradient(145deg, #1a3d2e 0%, #132e22 100%) !important;
-    border: 2px solid rgba(16,185,129,.35) !important;
-    color: #6ee7b7 !important;
-    box-shadow: 0 4px 24px rgba(16,185,129,.10) !important;
-}
-#card-re > button:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 14px 40px rgba(16,185,129,.28) !important;
-    border-color: rgba(16,185,129,.75) !important;
-}
-
-/* Back button on sub-pages */
-#back-btn-fa > button, #back-btn-ra > button {
-    background: transparent !important;
-    border: 1px solid #374151 !important;
-    color: #9CA3AF !important;
-    font-size: 13px !important;
-    padding: 6px 14px !important;
-    border-radius: 8px !important;
-}
-#back-btn-fa > button:hover, #back-btn-ra > button:hover {
-    border-color: #6B7280 !important;
-    color: #D1D5DB !important;
-}
-
 /* Inner report tab nav */
 .tab-nav button { font-size: 13px !important; }
 """
@@ -744,25 +688,50 @@ def create_demo() -> gr.Blocks:
             # ── Tab 0: Landing page ──────────────────────────────────────
             with gr.Tab("Home", id=0):
                 gr.HTML(_LANDING_BG_HTML)
+                gr.HTML("""
+<div style="max-width:860px; margin:0 auto; padding:8px 0 24px;">
 
-                with gr.Row(equal_height=True):
-                    card_first = gr.Button(
-                        "📊\n\nFirst Analysis\n\nFull multi-agent analysis\nfor any ticker",
-                        elem_id="card-first",
-                        scale=1,
-                    )
-                    card_re = gr.Button(
-                        "🔄\n\nRe-Analysis\n\nUpdate assessment with\ncurrent price data",
-                        elem_id="card-re",
-                        scale=1,
-                    )
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+
+    <div style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:12px; padding:20px 22px;">
+      <div style="font-size:22px; margin-bottom:8px;">📊</div>
+      <div style="font-weight:600; font-size:15px; margin-bottom:6px; color:#0369a1;">First Analysis</div>
+      <div style="font-size:13px; color:#475569; line-height:1.6;">
+        Run a full multi-agent analysis on any stock ticker.
+        Configurable analyst team (Market · Social · News · Fundamentals),
+        Bull/Bear debate, and a final risk-adjusted trading decision.
+      </div>
+    </div>
+
+    <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px; padding:20px 22px;">
+      <div style="font-size:22px; margin-bottom:8px;">🔄</div>
+      <div style="font-weight:600; font-size:15px; margin-bottom:6px; color:#15803d;">Re-Analysis</div>
+      <div style="font-size:13px; color:#475569; line-height:1.6;">
+        Update a previous analysis with today's price.
+        Loads key sections from an existing report and runs a focused
+        Technical + News reassessment — saving tokens while staying current.
+      </div>
+    </div>
+
+  </div>
+
+  <div style="background:#fafafa; border:1px solid #e5e7eb; border-radius:12px; padding:20px 24px;">
+    <div style="font-weight:600; font-size:14px; margin-bottom:14px; color:#374151;">✨ Key Features</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 24px; font-size:13px; color:#4b5563; line-height:1.7;">
+      <div>⚡ Multi-provider LLM support (OpenAI · Anthropic · Google · DeepSeek · Qwen · Azure · OpenRouter)</div>
+      <div>📂 OHLCV data caching — fetches once, reuses locally</div>
+      <div>🔁 Alpha Vantage fallback when Yahoo Finance is unavailable</div>
+      <div>🌏 Multi-language output (English, Chinese, Japanese, and more)</div>
+      <div>📥 Markdown report export with configurable save directory</div>
+      <div>🧠 Reasoning effort / thinking level controls per provider</div>
+    </div>
+  </div>
+
+</div>
+""")
 
             # ── Tab 1: First Analysis ────────────────────────────────────
             with gr.Tab("First Analysis", id=1):
-                with gr.Row():
-                    back_fa = gr.Button("← Back", elem_id="back-btn-fa", scale=0, min_width=80)
-                    gr.Markdown("## First Analysis", elem_id="page-title-fa")
-
                 with gr.Row(equal_height=False):
 
                     with gr.Column(scale=1, min_width=300):
@@ -863,10 +832,6 @@ def create_demo() -> gr.Blocks:
 
             # ── Tab 2: Re-Analysis ───────────────────────────────────────
             with gr.Tab("Re-Analysis", id=2):
-                with gr.Row():
-                    back_ra = gr.Button("← Back", elem_id="back-btn-ra", scale=0, min_width=80)
-                    gr.Markdown("## Re-Analysis", elem_id="page-title-ra")
-
                 with gr.Row(equal_height=False):
 
                     with gr.Column(scale=1, min_width=300):
@@ -959,12 +924,6 @@ def create_demo() -> gr.Blocks:
         # ═══════════════════════════════════════════════════════════════════
         # Event wiring
         # ═══════════════════════════════════════════════════════════════════
-
-        # ── Landing page navigation ──────────────────────────────────────
-        card_first.click(fn=lambda: gr.update(selected=1), outputs=[main_nav])
-        card_re.click(   fn=lambda: gr.update(selected=2), outputs=[main_nav])
-        back_fa.click(   fn=lambda: gr.update(selected=0), outputs=[main_nav])
-        back_ra.click(   fn=lambda: gr.update(selected=0), outputs=[main_nav])
 
         # ── First Analysis ───────────────────────────────────────────────
         ticker_input.change(
