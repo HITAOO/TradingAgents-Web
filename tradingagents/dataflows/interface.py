@@ -1,4 +1,5 @@
 from typing import Annotated
+from yfinance.exceptions import YFRateLimitError
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -156,7 +157,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             return impl_func(*args, **kwargs)
-        except AlphaVantageRateLimitError:
-            continue  # Only rate limits trigger fallback
+        except (AlphaVantageRateLimitError, YFRateLimitError):
+            continue  # Rate limits trigger fallback to next vendor
 
     raise RuntimeError(f"No available vendor for '{method}'")

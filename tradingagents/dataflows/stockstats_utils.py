@@ -17,16 +17,42 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
 
     yfinance raises YFRateLimitError on HTTP 429 responses but does not
     retry them internally. This wrapper adds retry logic specifically
-    for rate limits. Other exceptions propagate immediately.
+    for rate limits. When yfinance is rate-limited it can also silently
+    return None (causing TypeError downstream) — that case is treated as
+    a rate-limit and retried, then re-raised as YFRateLimitError so the
+    vendor fallback chain in interface.py can switch to Alpha Vantage.
     """
+    last_type_error = None
     for attempt in range(max_retries + 1):
         try:
-            return func()
+            result = func()
+            if result is None:
+                raise TypeError("yfinance returned None (possible rate limit or network issue)")
+            return result
         except YFRateLimitError:
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
                 logger.warning(f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
+            else:
+                raise
+        except TypeError as e:
+            last_type_error = e
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"Yahoo Finance returned None/TypeError, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                raise YFRateLimitError() from e
+        except Exception as e:
+            msg = str(e).lower()
+            if any(kw in msg for kw in ("timed out", "timeout", "curl", "connection", "network error", "failed to perform")):
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"Yahoo Finance network error, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(delay)
+                else:
+                    raise YFRateLimitError() from e
             else:
                 raise
 
@@ -47,29 +73,51 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 
-    Downloads 15 years of data up to today and caches per symbol. On
-    subsequent calls the cache is reused. Rows after curr_date are
-    filtered out so backtests never see future prices.
+    Uses a stable per-symbol cache file.  On each call the cache is checked:
+    if the stored data already reaches curr_date the API is skipped entirely;
+    otherwise a fresh 5-year download is performed and the cache is updated.
+    Rows after curr_date are always filtered out to prevent look-ahead bias.
     """
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
 
-    # Cache uses a fixed window (15y to today) so one file per symbol
     today_date = pd.Timestamp.today()
     start_date = today_date - pd.DateOffset(years=5)
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = today_date.strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    data_file = os.path.join(
-        config["data_cache_dir"],
-        f"{symbol}-YFin-data-{start_str}-{end_str}.csv",
-    )
+    # Stable filename — no date suffix so the same file is reused every day
+    data_file = os.path.join(config["data_cache_dir"], f"{symbol}-YFin-data.csv")
+
+    need_fetch = True
+    data = None
 
     if os.path.exists(data_file):
-        data = pd.read_csv(data_file, on_bad_lines="skip")
-    else:
-        data = yf_retry(lambda: yf.download(
+        try:
+            cached = pd.read_csv(data_file, on_bad_lines="skip")
+            cached["Date"] = pd.to_datetime(cached["Date"], errors="coerce")
+            max_cached = cached["Date"].max()
+            if pd.notna(max_cached) and max_cached >= curr_date_dt:
+                logger.debug(
+                    "OHLCV cache hit for %s (cached up to %s, requested %s)",
+                    symbol, max_cached.date(), curr_date_dt.date(),
+                )
+                data = cached
+                need_fetch = False
+            else:
+                logger.info(
+                    "OHLCV cache for %s only reaches %s; refreshing to cover %s",
+                    symbol,
+                    max_cached.date() if pd.notna(max_cached) else "N/A",
+                    curr_date_dt.date(),
+                )
+        except Exception as e:
+            logger.warning("Failed to read OHLCV cache for %s (%s); re-fetching.", symbol, e)
+
+    if need_fetch:
+        logger.info("Downloading OHLCV data for %s (%s → %s)", symbol, start_str, end_str)
+        raw = yf_retry(lambda: yf.download(
             symbol,
             start=start_str,
             end=end_str,
@@ -77,7 +125,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,
         ))
-        data = data.reset_index()
+        data = raw.reset_index()
         data.to_csv(data_file, index=False)
 
     data = _clean_dataframe(data)

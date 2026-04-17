@@ -3,6 +3,7 @@
 import yfinance as yf
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+from yfinance.exceptions import YFRateLimitError
 
 from .stockstats_utils import yf_retry
 
@@ -100,6 +101,8 @@ def get_news_yfinance(
 
         return f"## {ticker} News, from {start_date} to {end_date}:\n\n{news_str}"
 
+    except YFRateLimitError:
+        raise
     except Exception as e:
         return f"Error fetching news for {ticker}: {str(e)}"
 
@@ -193,5 +196,7 @@ def get_global_news_yfinance(
 
         return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
 
+    except YFRateLimitError:
+        raise
     except Exception as e:
         return f"Error fetching global news: {str(e)}"

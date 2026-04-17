@@ -32,6 +32,7 @@ _PROVIDER_CONFIG = {
     "glm": ("https://api.z.ai/api/paas/v4/", "ZHIPU_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "ollama": ("http://localhost:11434/v1", None),
+    "minimax": ("https://api.minimaxi.com/v1?GroupId=2035277407077798827", "MINIMAX_API_KEY"),
 }
 
 

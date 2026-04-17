@@ -4,6 +4,7 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
 import os
+from yfinance.exceptions import YFRateLimitError
 from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry, load_ohlcv, filter_financials_by_date
 
 def get_YFin_data_online(
@@ -11,36 +12,29 @@ def get_YFin_data_online(
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ):
-
     datetime.strptime(start_date, "%Y-%m-%d")
     datetime.strptime(end_date, "%Y-%m-%d")
 
-    # Create ticker object
-    ticker = yf.Ticker(symbol.upper())
+    # Reuse the shared OHLCV cache (fetches/updates only when needed)
+    data = load_ohlcv(symbol.upper(), end_date)
 
-    # Fetch historical data for the specified date range
-    data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
+    # Filter to the requested start date
+    start_dt = pd.to_datetime(start_date)
+    data = data[data["Date"] >= start_dt]
 
-    # Check if data is empty
     if data.empty:
-        return (
-            f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
-        )
+        return f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
 
-    # Remove timezone info from index for cleaner output
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
+    # Use Date as index for CSV output (consistent with original format)
+    data = data.set_index("Date")
 
     # Round numerical values to 2 decimal places for cleaner display
-    numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
-    for col in numeric_columns:
+    for col in ["Open", "High", "Low", "Close"]:
         if col in data.columns:
             data[col] = data[col].round(2)
 
-    # Convert DataFrame to CSV string
     csv_string = data.to_csv()
 
-    # Add header information
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
@@ -298,6 +292,8 @@ def get_fundamentals(
 
         return header + "\n".join(lines)
 
+    except YFRateLimitError:
+        raise
     except Exception as e:
         return f"Error retrieving fundamentals for {ticker}: {str(e)}"
 
@@ -417,6 +413,8 @@ def get_insider_transactions(
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
         return header + csv_string
-        
+
+    except YFRateLimitError:
+        raise
     except Exception as e:
         return f"Error retrieving insider transactions for {ticker}: {str(e)}"
