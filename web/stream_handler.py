@@ -267,8 +267,11 @@ class AnalysisStreamHandler:
         for agent, status in state.agent_status.items():
             yield {"event": "agent_status", "data": {"agent": agent, "status": status}}
 
+        # Inject historical memory context and auto-resolve any pending entries
+        graph._resolve_pending_entries(self.request.ticker)
+        past_context     = graph.memory_log.get_past_context(self.request.ticker)
         init_agent_state = graph.propagator.create_initial_state(
-            self.request.ticker, self.request.date
+            self.request.ticker, self.request.date, past_context=past_context
         )
         args = graph.propagator.get_graph_args(callbacks=[stats])
 
@@ -409,6 +412,14 @@ class AnalysisStreamHandler:
         # --- Final cleanup ---
         final_state = trace[-1]
         decision = graph.process_signal(final_state.get("final_trade_decision", ""))
+
+        # Store decision as pending in the memory log (Phase A)
+        if final_state.get("final_trade_decision"):
+            graph.memory_log.store_decision(
+                ticker=self.request.ticker,
+                trade_date=self.request.date,
+                final_trade_decision=final_state["final_trade_decision"],
+            )
 
         # Mark all agents completed
         for agent in list(state.agent_status):

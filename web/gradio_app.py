@@ -19,6 +19,8 @@ from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_opt
 from web.config_builder import PROVIDER_DISPLAY_NAMES
 from web.models import AnalysisRequest, ReanalysisRequest
 from web.report_scanner import ReportEntry, extract_key_sections, scan_reports
+from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.default_config import DEFAULT_CONFIG
 from web.stream_handler import (
     AnalysisStreamHandler,
     ReanalysisStreamHandler,
@@ -430,6 +432,134 @@ def scan_ticker_reports(library_dir: str, ticker: str):
     labels = [e.label for e in entries]
     return gr.update(choices=labels, value=labels[0], interactive=True), \
            gr.update(visible=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase B — Memory Outcomes helpers
+# ---------------------------------------------------------------------------
+
+def _get_memory_log() -> TradingMemoryLog:
+    return TradingMemoryLog(DEFAULT_CONFIG)
+
+
+def refresh_pending_decisions():
+    """Load pending memory log entries for the dropdown."""
+    log = _get_memory_log()
+    pending = log.get_pending_entries()
+    if not pending:
+        return gr.update(choices=[], value=None, interactive=False, placeholder="No pending decisions")
+    labels = [f"{e['date']} | {e['ticker']} | {e['rating']}" for e in pending]
+    return gr.update(choices=labels, value=labels[0], interactive=True)
+
+
+def show_pending_decision(entry_label: str) -> str:
+    """Return the original decision text for the selected pending entry."""
+    if not entry_label:
+        return "_Select an entry above to view the original decision._"
+    log = _get_memory_log()
+    pending = log.get_pending_entries()
+    parts = [p.strip() for p in entry_label.split("|")]
+    if len(parts) < 2:
+        return "_Invalid entry._"
+    trade_date, ticker = parts[0], parts[1]
+    for e in pending:
+        if e["date"] == trade_date and e["ticker"] == ticker:
+            return f"**[{entry_label}]**\n\n{e.get('decision', '_No decision text found._')}"
+    return "_Entry not found._"
+
+
+def generate_reflection_llm(
+    entry_label: str,
+    raw_return_str: str,
+    alpha_return_str: str,
+    provider: str,
+    quick_model: str,
+) -> str:
+    """Call the LLM to auto-generate a reflection for the selected pending entry."""
+    if not entry_label or not raw_return_str.strip() or not alpha_return_str.strip():
+        gr.Warning("Please select an entry and enter both return values first.")
+        return ""
+    try:
+        raw_return   = float(raw_return_str.strip()) / 100
+        alpha_return = float(alpha_return_str.strip()) / 100
+    except ValueError:
+        gr.Warning("Return values must be numbers (e.g. 5.2 or -3.1).")
+        return ""
+
+    log = _get_memory_log()
+    pending = log.get_pending_entries()
+    parts = [p.strip() for p in entry_label.split("|")]
+    trade_date, ticker = parts[0], parts[1]
+    decision_text = ""
+    for e in pending:
+        if e["date"] == trade_date and e["ticker"] == ticker:
+            decision_text = e.get("decision", "")
+            break
+    if not decision_text:
+        gr.Warning("Could not find the original decision text.")
+        return ""
+
+    from tradingagents.graph.reflection import Reflector
+    from tradingagents.llm_clients import create_llm_client
+
+    try:
+        client = create_llm_client(provider=provider.lower(), model=quick_model.strip())
+        reflector = Reflector(client.get_llm())
+        return reflector.reflect_on_final_decision(
+            final_decision=decision_text,
+            raw_return=raw_return,
+            alpha_return=alpha_return,
+        )
+    except Exception as e:
+        gr.Warning(f"LLM generation failed: {e}")
+        return ""
+
+
+def submit_memory_outcome(
+    entry_label: str,
+    raw_return_str: str,
+    alpha_return_str: str,
+    holding_days: float,
+    reflection: str,
+    provider: str,
+    quick_model: str,
+):
+    """Submit outcome for the selected pending memory log entry."""
+    if not entry_label:
+        return gr.update(value="⚠️ Please select a pending entry.", visible=True)
+    if not raw_return_str.strip() or not alpha_return_str.strip():
+        return gr.update(value="⚠️ Please enter both return values.", visible=True)
+    try:
+        raw_return   = float(raw_return_str.strip()) / 100
+        alpha_return = float(alpha_return_str.strip()) / 100
+    except ValueError:
+        return gr.update(value="⚠️ Return values must be numbers (e.g. 5.2 or -3.1).", visible=True)
+
+    parts = [p.strip() for p in entry_label.split("|")]
+    trade_date, ticker = parts[0], parts[1]
+
+    # Auto-generate reflection if not provided
+    actual_reflection = reflection.strip()
+    if not actual_reflection:
+        actual_reflection = generate_reflection_llm(
+            entry_label, raw_return_str, alpha_return_str, provider, quick_model
+        )
+        if not actual_reflection:
+            actual_reflection = "No reflection recorded."
+
+    log = _get_memory_log()
+    log.update_with_outcome(
+        ticker=ticker,
+        trade_date=trade_date,
+        raw_return=raw_return,
+        alpha_return=alpha_return,
+        holding_days=int(holding_days),
+        reflection=actual_reflection,
+    )
+    return gr.update(
+        value=f"✅ Outcome recorded for **{ticker}** ({trade_date}) — {raw_return:+.1%} raw / {alpha_return:+.1%} alpha",
+        visible=True,
+    )
 
 
 def stream_reanalysis(
@@ -908,6 +1038,52 @@ def create_demo() -> gr.Blocks:
                 with gr.Accordion("Live Activity Log", open=False):
                     ra_log_md = gr.Markdown("_Activity log will stream here._")
 
+                with gr.Accordion("Memory Outcomes — Phase B", open=False):
+                    gr.Markdown(
+                        "Record actual returns for past pending decisions so the memory log "
+                        "can build up lessons for future analyses."
+                    )
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1):
+                            gr.Markdown("#### Pending Decisions")
+                            pb_refresh_btn = gr.Button("🔄  Refresh Pending", variant="secondary")
+                            pb_entry_dropdown = gr.Dropdown(
+                                label="Select Pending Entry",
+                                choices=[], value=None,
+                                interactive=False, allow_custom_value=False,
+                            )
+                            pb_decision_md = gr.Markdown(
+                                "_Select an entry above to view the original decision._",
+                                label="Original Decision",
+                            )
+                        with gr.Column(scale=1):
+                            gr.Markdown("#### Submit Outcome")
+                            with gr.Row():
+                                pb_raw_return   = gr.Textbox(
+                                    label="Raw Return (%)", placeholder="e.g. 5.2 or -3.1",
+                                    max_lines=1, scale=1,
+                                )
+                                pb_alpha_return = gr.Textbox(
+                                    label="Alpha vs Market (%)", placeholder="e.g. 2.1 or -1.0",
+                                    max_lines=1, scale=1,
+                                )
+                            pb_holding_days = gr.Number(
+                                label="Holding Days", value=5, precision=0, minimum=1,
+                            )
+                            pb_reflection = gr.Textbox(
+                                label="Reflection (leave blank to auto-generate via LLM)",
+                                placeholder="What worked? What failed? Key lesson for future analyses.",
+                                lines=4,
+                            )
+                            with gr.Row():
+                                pb_generate_btn = gr.Button(
+                                    "✨  Auto-Generate Reflection", variant="secondary", scale=2,
+                                )
+                                pb_submit_btn = gr.Button(
+                                    "✅  Submit Outcome", variant="primary", scale=2,
+                                )
+                            pb_status_md = gr.Markdown(visible=False)
+
         # ═══════════════════════════════════════════════════════════════════
         # Event wiring
         # ═══════════════════════════════════════════════════════════════════
@@ -969,5 +1145,36 @@ def create_demo() -> gr.Blocks:
                      ra_trading_md, ra_risk_md, ra_decision_html, ra_stats, ra_log_md],
         )
         ra_cancel_btn.click(fn=None, cancels=[ra_run_event])
+
+        # ── Phase B: Memory Outcomes ─────────────────────────────────────
+        pb_refresh_btn.click(
+            fn=refresh_pending_decisions,
+            outputs=[pb_entry_dropdown],
+            show_progress=True,
+        )
+        pb_entry_dropdown.change(
+            fn=show_pending_decision,
+            inputs=[pb_entry_dropdown],
+            outputs=[pb_decision_md],
+            show_progress=False,
+        )
+        pb_generate_btn.click(
+            fn=generate_reflection_llm,
+            inputs=[pb_entry_dropdown, pb_raw_return, pb_alpha_return,
+                    ra_provider, ra_quick_model],
+            outputs=[pb_reflection],
+            show_progress=True,
+        )
+        pb_submit_btn.click(
+            fn=submit_memory_outcome,
+            inputs=[pb_entry_dropdown, pb_raw_return, pb_alpha_return,
+                    pb_holding_days, pb_reflection, ra_provider, ra_quick_model],
+            outputs=[pb_status_md],
+            show_progress=True,
+        ).then(
+            fn=refresh_pending_decisions,
+            outputs=[pb_entry_dropdown],
+            show_progress=False,
+        )
 
     return demo

@@ -1,144 +1,280 @@
-"""Financial situation memory using BM25 for lexical similarity matching.
+"""Append-only markdown decision log for TradingAgents.
 
-Uses BM25 (Best Matching 25) algorithm for retrieval - no API calls,
-no token limits, works offline with any LLM provider.
+Replaces the previous BM25-based FinancialSituationMemory with a persistent,
+human-readable log file. Decisions are stored as pending entries immediately
+after each analysis run (Phase A), then resolved with actual returns and
+LLM-generated reflections either automatically on the next same-ticker run
+or manually via the Re-Analysis Phase B UI (Phase B).
 """
 
-from rank_bm25 import BM25Okapi
-from typing import List, Tuple
+from __future__ import annotations
+
 import re
+from pathlib import Path
+from typing import List, Optional
+
+from tradingagents.agents.utils.rating import parse_rating
 
 
-class FinancialSituationMemory:
-    """Memory system for storing and retrieving financial situations using BM25."""
+class TradingMemoryLog:
+    """Append-only markdown log of trading decisions and reflections."""
 
-    def __init__(self, name: str, config: dict = None):
-        """Initialize the memory system.
+    # HTML comment: cannot appear in LLM prose output, safe as a hard delimiter
+    _SEPARATOR = "\n\n<!-- ENTRY_END -->\n\n"
+    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\Z)", re.DOTALL)
+    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
 
-        Args:
-            name: Name identifier for this memory instance
-            config: Configuration dict (kept for API compatibility, not used for BM25)
-        """
-        self.name = name
-        self.documents: List[str] = []
-        self.recommendations: List[str] = []
-        self.bm25 = None
+    def __init__(self, config: dict = None):
+        cfg = config or {}
+        self._log_path = None
+        path = cfg.get("memory_log_path")
+        if path:
+            self._log_path = Path(path).expanduser()
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._max_entries = cfg.get("memory_log_max_entries")
 
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text for BM25 indexing.
+    # --- Write path (Phase A) ---
 
-        Simple whitespace + punctuation tokenization with lowercasing.
-        """
-        # Lowercase and split on non-alphanumeric characters
-        tokens = re.findall(r'\b\w+\b', text.lower())
-        return tokens
+    def store_decision(
+        self,
+        ticker: str,
+        trade_date: str,
+        final_trade_decision: str,
+    ) -> None:
+        """Append a pending entry after analysis completes. No LLM call."""
+        if not self._log_path:
+            return
+        # Idempotency: skip if a pending entry for this ticker+date already exists
+        if self._log_path.exists():
+            raw = self._log_path.read_text(encoding="utf-8")
+            for line in raw.splitlines():
+                if line.startswith(f"[{trade_date} | {ticker} |") and line.endswith("| pending]"):
+                    return
+        rating = parse_rating(final_trade_decision)
+        tag = f"[{trade_date} | {ticker} | {rating} | pending]"
+        entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
+        with open(self._log_path, "a", encoding="utf-8") as f:
+            f.write(entry)
 
-    def _rebuild_index(self):
-        """Rebuild the BM25 index after adding documents."""
-        if self.documents:
-            tokenized_docs = [self._tokenize(doc) for doc in self.documents]
-            self.bm25 = BM25Okapi(tokenized_docs)
-        else:
-            self.bm25 = None
+    # --- Read path ---
 
-    def add_situations(self, situations_and_advice: List[Tuple[str, str]]):
-        """Add financial situations and their corresponding advice.
-
-        Args:
-            situations_and_advice: List of tuples (situation, recommendation)
-        """
-        for situation, recommendation in situations_and_advice:
-            self.documents.append(situation)
-            self.recommendations.append(recommendation)
-
-        # Rebuild BM25 index with new documents
-        self._rebuild_index()
-
-    def get_memories(self, current_situation: str, n_matches: int = 1) -> List[dict]:
-        """Find matching recommendations using BM25 similarity.
-
-        Args:
-            current_situation: The current financial situation to match against
-            n_matches: Number of top matches to return
-
-        Returns:
-            List of dicts with matched_situation, recommendation, and similarity_score
-        """
-        if not self.documents or self.bm25 is None:
+    def load_entries(self) -> List[dict]:
+        """Parse all entries from the log file."""
+        if not self._log_path or not self._log_path.exists():
             return []
+        text = self._log_path.read_text(encoding="utf-8")
+        raw_entries = [e.strip() for e in text.split(self._SEPARATOR) if e.strip()]
+        return [p for p in (self._parse_entry(r) for r in raw_entries) if p]
 
-        # Tokenize query
-        query_tokens = self._tokenize(current_situation)
+    def get_pending_entries(self) -> List[dict]:
+        """Return entries with outcome: pending (for Phase B)."""
+        return [e for e in self.load_entries() if e.get("pending")]
 
-        # Get BM25 scores for all documents
-        scores = self.bm25.get_scores(query_tokens)
+    def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
+        """Return formatted past context string for injection into agent prompts."""
+        entries = [e for e in self.load_entries() if not e.get("pending")]
+        if not entries:
+            return ""
 
-        # Get top-n indices sorted by score (descending)
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n_matches]
+        same, cross = [], []
+        for e in reversed(entries):
+            if len(same) >= n_same and len(cross) >= n_cross:
+                break
+            if e["ticker"] == ticker and len(same) < n_same:
+                same.append(e)
+            elif e["ticker"] != ticker and len(cross) < n_cross:
+                cross.append(e)
 
-        # Build results
-        results = []
-        max_score = float(scores.max()) if len(scores) > 0 and scores.max() > 0 else 1.0
+        if not same and not cross:
+            return ""
 
-        for idx in top_indices:
-            # Normalize score to 0-1 range for consistency
-            normalized_score = scores[idx] / max_score if max_score > 0 else 0
-            results.append({
-                "matched_situation": self.documents[idx],
-                "recommendation": self.recommendations[idx],
-                "similarity_score": normalized_score,
-            })
+        parts = []
+        if same:
+            parts.append(f"Past analyses of {ticker} (most recent first):")
+            parts.extend(self._format_full(e) for e in same)
+        if cross:
+            parts.append("Recent cross-ticker lessons:")
+            parts.extend(self._format_reflection_only(e) for e in cross)
+        return "\n\n".join(parts)
 
-        return results
+    # --- Update path (Phase B) ---
 
-    def clear(self):
-        """Clear all stored memories."""
-        self.documents = []
-        self.recommendations = []
-        self.bm25 = None
+    def update_with_outcome(
+        self,
+        ticker: str,
+        trade_date: str,
+        raw_return: float,
+        alpha_return: float,
+        holding_days: int,
+        reflection: str,
+    ) -> None:
+        """Replace pending tag and append REFLECTION section using atomic write."""
+        if not self._log_path or not self._log_path.exists():
+            return
 
+        text = self._log_path.read_text(encoding="utf-8")
+        blocks = text.split(self._SEPARATOR)
+        pending_prefix = f"[{trade_date} | {ticker} |"
+        raw_pct = f"{raw_return:+.1%}"
+        alpha_pct = f"{alpha_return:+.1%}"
 
-if __name__ == "__main__":
-    # Example usage
-    matcher = FinancialSituationMemory("test_memory")
+        updated = False
+        new_blocks = []
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                new_blocks.append(block)
+                continue
+            lines = stripped.splitlines()
+            tag_line = lines[0].strip()
+            if (
+                not updated
+                and tag_line.startswith(pending_prefix)
+                and tag_line.endswith("| pending]")
+            ):
+                fields = [f.strip() for f in tag_line[1:-1].split("|")]
+                rating = fields[2]
+                new_tag = (
+                    f"[{trade_date} | {ticker} | {rating}"
+                    f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
+                )
+                rest = "\n".join(lines[1:])
+                new_blocks.append(
+                    f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
+                )
+                updated = True
+            else:
+                new_blocks.append(block)
 
-    # Example data
-    example_data = [
-        (
-            "High inflation rate with rising interest rates and declining consumer spending",
-            "Consider defensive sectors like consumer staples and utilities. Review fixed-income portfolio duration.",
-        ),
-        (
-            "Tech sector showing high volatility with increasing institutional selling pressure",
-            "Reduce exposure to high-growth tech stocks. Look for value opportunities in established tech companies with strong cash flows.",
-        ),
-        (
-            "Strong dollar affecting emerging markets with increasing forex volatility",
-            "Hedge currency exposure in international positions. Consider reducing allocation to emerging market debt.",
-        ),
-        (
-            "Market showing signs of sector rotation with rising yields",
-            "Rebalance portfolio to maintain target allocations. Consider increasing exposure to sectors benefiting from higher rates.",
-        ),
-    ]
+        if not updated:
+            return
 
-    # Add the example situations and recommendations
-    matcher.add_situations(example_data)
+        self._atomic_write(new_blocks)
 
-    # Example query
-    current_situation = """
-    Market showing increased volatility in tech sector, with institutional investors
-    reducing positions and rising interest rates affecting growth stock valuations
-    """
+    def batch_update_with_outcomes(self, updates: List[dict]) -> None:
+        """Apply multiple outcome updates in a single atomic write."""
+        if not self._log_path or not self._log_path.exists() or not updates:
+            return
 
-    try:
-        recommendations = matcher.get_memories(current_situation, n_matches=2)
+        text = self._log_path.read_text(encoding="utf-8")
+        blocks = text.split(self._SEPARATOR)
+        update_map = {(u["trade_date"], u["ticker"]): u for u in updates}
 
-        for i, rec in enumerate(recommendations, 1):
-            print(f"\nMatch {i}:")
-            print(f"Similarity Score: {rec['similarity_score']:.2f}")
-            print(f"Matched Situation: {rec['matched_situation']}")
-            print(f"Recommendation: {rec['recommendation']}")
+        new_blocks = []
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                new_blocks.append(block)
+                continue
+            lines = stripped.splitlines()
+            tag_line = lines[0].strip()
 
-    except Exception as e:
-        print(f"Error during recommendation: {str(e)}")
+            matched = False
+            for (trade_date, ticker), upd in list(update_map.items()):
+                pending_prefix = f"[{trade_date} | {ticker} |"
+                if tag_line.startswith(pending_prefix) and tag_line.endswith("| pending]"):
+                    fields = [f.strip() for f in tag_line[1:-1].split("|")]
+                    rating = fields[2]
+                    raw_pct = f"{upd['raw_return']:+.1%}"
+                    alpha_pct = f"{upd['alpha_return']:+.1%}"
+                    new_tag = (
+                        f"[{trade_date} | {ticker} | {rating}"
+                        f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
+                    )
+                    rest = "\n".join(lines[1:])
+                    new_blocks.append(
+                        f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
+                    )
+                    del update_map[(trade_date, ticker)]
+                    matched = True
+                    break
+
+            if not matched:
+                new_blocks.append(block)
+
+        self._atomic_write(new_blocks)
+
+    # --- Helpers ---
+
+    def _atomic_write(self, blocks: List[str]) -> None:
+        blocks = self._apply_rotation(blocks)
+        new_text = self._SEPARATOR.join(blocks)
+        tmp_path = self._log_path.with_suffix(".tmp")
+        tmp_path.write_text(new_text, encoding="utf-8")
+        tmp_path.replace(self._log_path)
+
+    def _apply_rotation(self, blocks: List[str]) -> List[str]:
+        """Drop oldest resolved blocks when their count exceeds max_entries."""
+        if not self._max_entries or self._max_entries <= 0:
+            return blocks
+
+        decisions = []
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                decisions.append((block, False))
+                continue
+            tag_line = stripped.splitlines()[0].strip()
+            is_resolved = (
+                tag_line.startswith("[")
+                and tag_line.endswith("]")
+                and not tag_line.endswith("| pending]")
+            )
+            decisions.append((block, is_resolved))
+
+        resolved_count = sum(1 for _, r in decisions if r)
+        if resolved_count <= self._max_entries:
+            return blocks
+
+        to_drop = resolved_count - self._max_entries
+        kept: List[str] = []
+        for block, is_resolved in decisions:
+            if is_resolved and to_drop > 0:
+                to_drop -= 1
+                continue
+            kept.append(block)
+        return kept
+
+    def _parse_entry(self, raw: str) -> Optional[dict]:
+        lines = raw.strip().splitlines()
+        if not lines:
+            return None
+        tag_line = lines[0].strip()
+        if not (tag_line.startswith("[") and tag_line.endswith("]")):
+            return None
+        fields = [f.strip() for f in tag_line[1:-1].split("|")]
+        if len(fields) < 4:
+            return None
+        entry = {
+            "date": fields[0],
+            "ticker": fields[1],
+            "rating": fields[2],
+            "pending": fields[3] == "pending",
+            "raw": fields[3] if fields[3] != "pending" else None,
+            "alpha": fields[4] if len(fields) > 4 else None,
+            "holding": fields[5] if len(fields) > 5 else None,
+        }
+        body = "\n".join(lines[1:]).strip()
+        dm = self._DECISION_RE.search(body)
+        rm = self._REFLECTION_RE.search(body)
+        entry["decision"] = dm.group(1).strip() if dm else ""
+        entry["reflection"] = rm.group(1).strip() if rm else ""
+        return entry
+
+    def _format_full(self, e: dict) -> str:
+        raw = e["raw"] or "n/a"
+        alpha = e["alpha"] or "n/a"
+        holding = e["holding"] or "n/a"
+        tag = f"[{e['date']} | {e['ticker']} | {e['rating']} | {raw} | {alpha} | {holding}]"
+        parts = [tag, f"DECISION:\n{e['decision']}"]
+        if e["reflection"]:
+            parts.append(f"REFLECTION:\n{e['reflection']}")
+        return "\n\n".join(parts)
+
+    def _format_reflection_only(self, e: dict) -> str:
+        tag = f"[{e['date']} | {e['ticker']} | {e['rating']} | {e['raw'] or 'n/a'}]"
+        if e["reflection"]:
+            return f"{tag}\n{e['reflection']}"
+        text = e["decision"][:300]
+        suffix = "..." if len(e["decision"]) > 300 else ""
+        return f"{tag}\n{text}{suffix}"

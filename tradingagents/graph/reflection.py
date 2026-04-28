@@ -118,3 +118,37 @@ Adhere strictly to these instructions, and ensure your output is detailed, accur
             "PORTFOLIO MANAGER", judge_decision, situation, returns_losses
         )
         portfolio_manager_memory.add_situations([(situation, result)])
+
+    def reflect_on_final_decision(
+        self,
+        final_decision: str,
+        raw_return: float,
+        alpha_return: float,
+    ) -> str:
+        """Generate a concise Phase B reflection for the memory log.
+
+        Produces 2-4 sentences of plain prose suitable for re-injection into
+        future agent prompts without bloating the context window.
+        """
+        system_prompt = (
+            "You are a trading analyst reviewing your own past decision now that the outcome is known.\n"
+            "Write exactly 2-4 sentences of plain prose (no bullets, no headers, no markdown).\n\n"
+            "Cover in order:\n"
+            "1. Was the directional call correct? (cite the alpha figure)\n"
+            "2. Which part of the investment thesis held or failed?\n"
+            "3. One concrete lesson to apply to the next similar analysis.\n\n"
+            "Be specific and terse. Your output will be stored verbatim in a decision log "
+            "and re-read by future analysts, so every word must earn its place."
+        )
+        messages = [
+            ("system", system_prompt),
+            (
+                "human",
+                (
+                    f"Raw return: {raw_return:+.1%}\n"
+                    f"Alpha vs SPY: {alpha_return:+.1%}\n\n"
+                    f"Final Decision:\n{final_decision}"
+                ),
+            ),
+        ]
+        return self.quick_thinking_llm.invoke(messages).content
