@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime
 import queue
-import tempfile
 import threading
 import time
 from typing import Generator
@@ -372,30 +371,19 @@ def stream_analysis(
 # ---------------------------------------------------------------------------
 
 def prepare_download(sections: dict, ticker: str, date: str, save_dir: str):
+    import pathlib
     if not sections:
-        return gr.update(visible=False), ""
+        return gr.update(visible=False)
     content = build_full_report_markdown(sections, ticker=ticker, date=date)
     suffix = f"_{ticker}_{date}" if ticker else ""
     filename = f"tradingagents_report{suffix}.md"
 
-    # Save to user-specified directory if provided
-    save_msg = ""
-    if save_dir and save_dir.strip():
-        import pathlib
-        dest = pathlib.Path(save_dir.strip()).expanduser()
-        dest.mkdir(parents=True, exist_ok=True)
-        out_path = dest / filename
-        out_path.write_text(content, encoding="utf-8")
-        save_msg = f"✅ Report saved to: `{out_path}`"
-
-    # Also write to temp file for browser download
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", delete=False,
-        prefix=f"tradingagents_report{suffix}_",
-        encoding="utf-8",
-    ) as f:
-        f.write(content)
-        return gr.update(value=f.name, visible=True), save_msg
+    dest = pathlib.Path(save_dir.strip()).expanduser() if save_dir and save_dir.strip() else pathlib.Path("reports")
+    dest.mkdir(parents=True, exist_ok=True)
+    out_path = dest / filename
+    out_path.write_text(content, encoding="utf-8")
+    save_msg = f"✅ Report saved to: `{out_path.resolve()}`"
+    return gr.update(value=save_msg, visible=True)
 
 
 # ---------------------------------------------------------------------------
@@ -815,7 +803,7 @@ def create_demo() -> gr.Blocks:
                         decision_html = gr.HTML(value=_decision_html(""))
                         with gr.Row():
                             save_dir_input = gr.Textbox(
-                                label="Save report to directory (optional)",
+                                label="Save directory (default: ./reports/)",
                                 placeholder="e.g. ~/reports  or  /Users/you/Desktop",
                                 max_lines=1, scale=3,
                             )
@@ -823,7 +811,6 @@ def create_demo() -> gr.Blocks:
                                 "⬇  Export Report", variant="secondary", visible=False, scale=1,
                             )
                         save_msg_md   = gr.Markdown(visible=False)
-                        download_file = gr.File(visible=False, label="Report File")
 
                 with gr.Accordion("Live Activity Log", open=False):
                     log_md = gr.Markdown("_Activity log will stream here during analysis._")
@@ -949,10 +936,7 @@ def create_demo() -> gr.Blocks:
         download_btn.click(
             fn=prepare_download,
             inputs=[report_state, ticker_input, date_input, save_dir_input],
-            outputs=[download_file, save_msg_md],
-        ).then(
-            fn=lambda msg: gr.update(value=msg, visible=bool(msg)),
-            inputs=[save_msg_md], outputs=[save_msg_md],
+            outputs=[save_msg_md],
         )
 
         # ── Re-Analysis ──────────────────────────────────────────────────

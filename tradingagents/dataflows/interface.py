@@ -159,5 +159,12 @@ def route_to_vendor(method: str, *args, **kwargs):
             return impl_func(*args, **kwargs)
         except (AlphaVantageRateLimitError, YFRateLimitError):
             continue  # Rate limits trigger fallback to next vendor
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Vendor '%s' failed for '%s' (%s: %s), trying next vendor",
+                vendor, method, type(e).__name__, e,
+            )
+            continue
 
     raise RuntimeError(f"No available vendor for '{method}'")

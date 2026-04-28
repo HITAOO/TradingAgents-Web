@@ -73,9 +73,11 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 
-    Uses a stable per-symbol cache file.  On each call the cache is checked:
-    if the stored data already reaches curr_date the API is skipped entirely;
-    otherwise a fresh 5-year download is performed and the cache is updated.
+    Uses a stable per-symbol cache file. On each call:
+    - Cache hit (covers curr_date): returned as-is, no network request.
+    - Cache exists but is stale: only the missing days are fetched and
+      appended, avoiding a full 5-year re-download.
+    - No cache: full 5-year download is performed.
     Rows after curr_date are always filtered out to prevent look-ahead bias.
     """
     config = get_config()
@@ -87,35 +89,54 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     end_str = today_date.strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    # Stable filename — no date suffix so the same file is reused every day
     data_file = os.path.join(config["data_cache_dir"], f"{symbol}-YFin-data.csv")
 
-    need_fetch = True
-    data = None
+    cached = None
 
     if os.path.exists(data_file):
         try:
             cached = pd.read_csv(data_file, on_bad_lines="skip")
+            if cached.empty or "Date" not in cached.columns:
+                raise ValueError("Cache file is empty or malformed")
             cached["Date"] = pd.to_datetime(cached["Date"], errors="coerce")
             max_cached = cached["Date"].max()
+
             if pd.notna(max_cached) and max_cached >= curr_date_dt:
                 logger.debug(
                     "OHLCV cache hit for %s (cached up to %s, requested %s)",
                     symbol, max_cached.date(), curr_date_dt.date(),
                 )
                 data = cached
-                need_fetch = False
             else:
+                # Fetch only the missing days and append to cache
+                fetch_start = (max_cached + pd.Timedelta(days=1)).strftime("%Y-%m-%d") if pd.notna(max_cached) else start_str
                 logger.info(
-                    "OHLCV cache for %s only reaches %s; refreshing to cover %s",
+                    "OHLCV cache for %s only reaches %s; fetching %s → %s",
                     symbol,
                     max_cached.date() if pd.notna(max_cached) else "N/A",
-                    curr_date_dt.date(),
+                    fetch_start,
+                    end_str,
                 )
+                raw = yf_retry(lambda: yf.download(
+                    symbol,
+                    start=fetch_start,
+                    end=end_str,
+                    multi_level_index=False,
+                    progress=False,
+                    auto_adjust=True,
+                ))
+                if raw.empty:
+                    raise YFRateLimitError("yf.download returned empty data (likely rate limited)")
+                new_rows = raw.reset_index()
+                data = pd.concat([cached, new_rows], ignore_index=True)
+                data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+                data = data.drop_duplicates(subset=["Date"]).sort_values("Date")
+                data.to_csv(data_file, index=False)
         except Exception as e:
             logger.warning("Failed to read OHLCV cache for %s (%s); re-fetching.", symbol, e)
+            cached = None
 
-    if need_fetch:
+    if cached is None:
         logger.info("Downloading OHLCV data for %s (%s → %s)", symbol, start_str, end_str)
         raw = yf_retry(lambda: yf.download(
             symbol,
@@ -125,6 +146,8 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,
         ))
+        if raw.empty:
+            raise YFRateLimitError("yf.download returned empty data (likely rate limited)")
         data = raw.reset_index()
         data.to_csv(data_file, index=False)
 

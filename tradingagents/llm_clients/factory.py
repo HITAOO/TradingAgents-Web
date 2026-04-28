@@ -5,10 +5,11 @@ from .openai_client import OpenAIClient
 from .anthropic_client import AnthropicClient
 from .google_client import GoogleClient
 from .azure_client import AzureOpenAIClient
+from .deepseek_client import DeepSeekClient
 
 # Providers that use the OpenAI-compatible chat completions API
 _OPENAI_COMPATIBLE = (
-    "openai", "xai", "deepseek", "qwen", "glm", "ollama", "openrouter", "minimax",
+    "openai", "xai", "qwen", "glm", "ollama", "openrouter", "minimax",
 )
 
 
@@ -33,6 +34,9 @@ def create_llm_client(
         ValueError: If provider is not supported
     """
     provider_lower = provider.lower()
+
+    if provider_lower == "deepseek":
+        return DeepSeekClient(model, base_url, **kwargs)
 
     if provider_lower in _OPENAI_COMPATIBLE:
         return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)

@@ -31,6 +31,7 @@ load_dotenv(".env.enterprise", override=False)
 
 
 def run_gradio(host: str, port: int, share: bool) -> None:
+    import tempfile
     from web.gradio_app import create_demo
     demo = create_demo()
     demo.launch(
@@ -38,18 +39,21 @@ def run_gradio(host: str, port: int, share: bool) -> None:
         server_port=port,
         share=share,
         show_error=True,
+        allowed_paths=[tempfile.gettempdir()],
     )
 
 
 def run_server(host: str, port: int) -> None:
     """Mount Gradio under /ui and serve both the REST API and the UI together."""
+    import tempfile
+
     import gradio as gr
     import uvicorn
     from web.app import app as fastapi_app
     from web.gradio_app import create_demo
 
     demo = create_demo()
-    app = gr.mount_gradio_app(fastapi_app, demo, path="/ui")
+    app = gr.mount_gradio_app(fastapi_app, demo, path="/ui", allowed_paths=[tempfile.gettempdir()])
     print(f"\nTradingAgents server starting at  http://{host}:{port}")
     print(f"  Web UI  →  http://{host}:{port}/ui")
     print(f"  API     →  http://{host}:{port}/docs\n")
