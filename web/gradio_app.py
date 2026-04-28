@@ -464,9 +464,9 @@ def show_pending_decision(entry_label: str):
     trade_date, ticker = parts[0], parts[1]
     for e in pending:
         if e["date"] == trade_date and e["ticker"] == ticker:
-            decision = e.get("decision", "") or "_无决策内容_"
+            decision = e.get("decision", "") or "_No decision text found._"
             return gr.update(
-                value=f"**原始决策** `[{entry_label}]`\n\n{decision}",
+                value=f"**Original Decision** `[{entry_label}]`\n\n{decision}",
                 visible=True,
             )
     return gr.update(value="", visible=False)
@@ -1044,48 +1044,46 @@ def create_demo() -> gr.Blocks:
 
                 with gr.Accordion("Memory Outcomes — Phase B", open=False):
                     gr.Markdown(
-                        "填写已完成持仓的实际收益，系统将生成反思并写入记忆日志，"
-                        "供后续分析参考。"
+                        "Record actual returns for completed positions. "
+                        "The system will generate a reflection and write it to the memory log "
+                        "for use in future analyses."
                     )
                     with gr.Row():
                         pb_entry_dropdown = gr.Dropdown(
-                            label="待处理决策",
+                            label="Pending Decision",
                             choices=[], value=None,
                             interactive=False, allow_custom_value=False,
                             scale=3,
                         )
                         pb_refresh_btn = gr.Button(
-                            "🔄 刷新", variant="secondary", scale=1, min_width=80,
+                            "🔄 Refresh", variant="secondary", scale=1, min_width=80,
                         )
-                    pb_decision_md = gr.Markdown(
-                        visible=False,
-                        label="原始决策",
-                    )
+                    pb_decision_md = gr.Markdown(visible=False)
                     with gr.Row():
                         pb_raw_return = gr.Textbox(
-                            label="原始收益率 (%)",
-                            placeholder="例：5.2 或 -3.1",
+                            label="Raw Return (%)",
+                            placeholder="e.g. 5.2 or -3.1",
                             max_lines=1, scale=1,
                         )
                         pb_alpha_return = gr.Textbox(
-                            label="超额收益 Alpha (%)",
-                            placeholder="例：2.1 或 -1.0",
+                            label="Alpha vs Market (%)",
+                            placeholder="e.g. 2.1 or -1.0",
                             max_lines=1, scale=1,
                         )
                         pb_holding_days = gr.Number(
-                            label="持仓天数", value=5, precision=0, minimum=1, scale=1,
+                            label="Holding Days", value=5, precision=0, minimum=1, scale=1,
                         )
                     pb_reflection = gr.Textbox(
-                        label="反思（留空则由 LLM 自动生成）",
-                        placeholder="哪些判断正确？哪些失误？对未来分析的启示？",
+                        label="Reflection (leave blank to auto-generate via LLM)",
+                        placeholder="What worked? What failed? Key lesson for future analyses.",
                         lines=3,
                     )
                     with gr.Row():
                         pb_generate_btn = gr.Button(
-                            "✨ 自动生成反思", variant="secondary", scale=1,
+                            "✨  Auto-Generate Reflection", variant="secondary", scale=1,
                         )
                         pb_submit_btn = gr.Button(
-                            "✅ 提交结果", variant="primary", scale=1,
+                            "✅  Submit Outcome", variant="primary", scale=1,
                         )
                     pb_status_md = gr.Markdown(visible=False)
 
