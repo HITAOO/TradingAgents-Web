@@ -447,25 +447,29 @@ def refresh_pending_decisions():
     log = _get_memory_log()
     pending = log.get_pending_entries()
     if not pending:
-        return gr.update(choices=[], value=None, interactive=False, placeholder="No pending decisions")
+        return gr.update(choices=[], value=None, interactive=False)
     labels = [f"{e['date']} | {e['ticker']} | {e['rating']}" for e in pending]
     return gr.update(choices=labels, value=labels[0], interactive=True)
 
 
-def show_pending_decision(entry_label: str) -> str:
+def show_pending_decision(entry_label: str):
     """Return the original decision text for the selected pending entry."""
     if not entry_label:
-        return "_Select an entry above to view the original decision._"
+        return gr.update(value="", visible=False)
     log = _get_memory_log()
     pending = log.get_pending_entries()
     parts = [p.strip() for p in entry_label.split("|")]
     if len(parts) < 2:
-        return "_Invalid entry._"
+        return gr.update(value="", visible=False)
     trade_date, ticker = parts[0], parts[1]
     for e in pending:
         if e["date"] == trade_date and e["ticker"] == ticker:
-            return f"**[{entry_label}]**\n\n{e.get('decision', '_No decision text found._')}"
-    return "_Entry not found._"
+            decision = e.get("decision", "") or "_无决策内容_"
+            return gr.update(
+                value=f"**原始决策** `[{entry_label}]`\n\n{decision}",
+                visible=True,
+            )
+    return gr.update(value="", visible=False)
 
 
 def generate_reflection_llm(
@@ -1040,49 +1044,50 @@ def create_demo() -> gr.Blocks:
 
                 with gr.Accordion("Memory Outcomes — Phase B", open=False):
                     gr.Markdown(
-                        "Record actual returns for past pending decisions so the memory log "
-                        "can build up lessons for future analyses."
+                        "填写已完成持仓的实际收益，系统将生成反思并写入记忆日志，"
+                        "供后续分析参考。"
                     )
-                    with gr.Row(equal_height=False):
-                        with gr.Column(scale=1):
-                            gr.Markdown("#### Pending Decisions")
-                            pb_refresh_btn = gr.Button("🔄  Refresh Pending", variant="secondary")
-                            pb_entry_dropdown = gr.Dropdown(
-                                label="Select Pending Entry",
-                                choices=[], value=None,
-                                interactive=False, allow_custom_value=False,
-                            )
-                            pb_decision_md = gr.Markdown(
-                                "_Select an entry above to view the original decision._",
-                                label="Original Decision",
-                            )
-                        with gr.Column(scale=1):
-                            gr.Markdown("#### Submit Outcome")
-                            with gr.Row():
-                                pb_raw_return   = gr.Textbox(
-                                    label="Raw Return (%)", placeholder="e.g. 5.2 or -3.1",
-                                    max_lines=1, scale=1,
-                                )
-                                pb_alpha_return = gr.Textbox(
-                                    label="Alpha vs Market (%)", placeholder="e.g. 2.1 or -1.0",
-                                    max_lines=1, scale=1,
-                                )
-                            pb_holding_days = gr.Number(
-                                label="Holding Days", value=5, precision=0, minimum=1,
-                            )
-                            pb_reflection = gr.Textbox(
-                                label="Reflection (leave blank to auto-generate via LLM)",
-                                placeholder="What worked? What failed? Key lesson for future analyses.",
-                                lines=4,
-                            )
-                            with gr.Row():
-                                pb_generate_btn = gr.Button(
-                                    "✨  Auto-Generate Reflection", variant="secondary", scale=2,
-                                )
-                                pb_submit_btn = gr.Button(
-                                    "✅  Submit Outcome", variant="primary", scale=2,
-                                )
-                            pb_status_md = gr.Markdown(visible=False)
+                    with gr.Row():
+                        pb_entry_dropdown = gr.Dropdown(
+                            label="待处理决策",
+                            choices=[], value=None,
+                            interactive=False, allow_custom_value=False,
+                            scale=3,
+                        )
+                        pb_refresh_btn = gr.Button(
+                            "🔄 刷新", variant="secondary", scale=1, min_width=80,
+                        )
+                    pb_decision_md = gr.Markdown(
+                        visible=False,
+                        label="原始决策",
+                    )
+                    with gr.Row():
+                        pb_raw_return = gr.Textbox(
+                            label="原始收益率 (%)",
+                            placeholder="例：5.2 或 -3.1",
+                            max_lines=1, scale=1,
+                        )
+                        pb_alpha_return = gr.Textbox(
+                            label="超额收益 Alpha (%)",
+                            placeholder="例：2.1 或 -1.0",
+                            max_lines=1, scale=1,
+                        )
+                        pb_holding_days = gr.Number(
+                            label="持仓天数", value=5, precision=0, minimum=1, scale=1,
+                        )
+                    pb_reflection = gr.Textbox(
+                        label="反思（留空则由 LLM 自动生成）",
+                        placeholder="哪些判断正确？哪些失误？对未来分析的启示？",
+                        lines=3,
+                    )
+                    with gr.Row():
+                        pb_generate_btn = gr.Button(
+                            "✨ 自动生成反思", variant="secondary", scale=1,
+                        )
+                        pb_submit_btn = gr.Button(
+                            "✅ 提交结果", variant="primary", scale=1,
+                        )
+                    pb_status_md = gr.Markdown(visible=False)
 
         # ═══════════════════════════════════════════════════════════════════
         # Event wiring
@@ -1147,10 +1152,18 @@ def create_demo() -> gr.Blocks:
         ra_cancel_btn.click(fn=None, cancels=[ra_run_event])
 
         # ── Phase B: Memory Outcomes ─────────────────────────────────────
+        # Auto-load pending decisions on page load
+        demo.load(fn=refresh_pending_decisions, outputs=[pb_entry_dropdown])
+
         pb_refresh_btn.click(
             fn=refresh_pending_decisions,
             outputs=[pb_entry_dropdown],
             show_progress=True,
+        ).then(
+            fn=show_pending_decision,
+            inputs=[pb_entry_dropdown],
+            outputs=[pb_decision_md],
+            show_progress=False,
         )
         pb_entry_dropdown.change(
             fn=show_pending_decision,
@@ -1174,6 +1187,10 @@ def create_demo() -> gr.Blocks:
         ).then(
             fn=refresh_pending_decisions,
             outputs=[pb_entry_dropdown],
+            show_progress=False,
+        ).then(
+            fn=lambda: gr.update(value="", visible=False),
+            outputs=[pb_decision_md],
             show_progress=False,
         )
 
