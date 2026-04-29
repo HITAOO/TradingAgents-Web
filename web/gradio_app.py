@@ -378,7 +378,7 @@ def prepare_download(sections: dict, ticker: str, date: str, save_dir: str):
         return gr.update(visible=False)
     content = build_full_report_markdown(sections, ticker=ticker, date=date)
     suffix = f"_{ticker}_{date}" if ticker else ""
-    filename = f"tradingagents_report{suffix}.md"
+    filename = f"{suffix.lstrip('_') or 'report'}.md"
 
     dest = pathlib.Path(save_dir.strip()).expanduser() if save_dir and save_dir.strip() else pathlib.Path("reports")
     dest.mkdir(parents=True, exist_ok=True)
